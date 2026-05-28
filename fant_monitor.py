@@ -1,6 +1,9 @@
 import subprocess
 import json
 import re
+import csv
+import os
+from datetime import datetime
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -216,6 +219,30 @@ DASHBOARD_HTML = """
 </html>
 """
 
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, f"pulse_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+
+with open(LOG_FILE, 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(["timestamp", "ssid", "signal_pct", "local_ping_ms", "web_ping_ms", "isp_overhead_ms"])
+
+def parse_wifi(raw):
+    ssid, signal = "Unknown", 0
+    for line in raw.split('\n'):
+        if line.strip().startswith('SSID'):
+            parts = line.split(':')
+            if len(parts) > 1:
+                ssid = parts[1].strip()
+        if 'Signal' in line:
+            parts = line.split(':')
+            if len(parts) > 1:
+                try:
+                    signal = int(parts[1].replace('%', '').strip())
+                except:
+                    pass
+    return ssid, signal
+
 def get_ping(host):
     """Pings the host and returns latency in ms."""
     try:
@@ -247,6 +274,15 @@ def get_stats():
         
         wifi_data = subprocess.check_output("netsh wlan show interfaces", shell=True).decode('utf-8')
         
+        # Log to CSV
+        ssid, signal = parse_wifi(wifi_data)
+        diff = max(0, web_p - local_p)
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                csv.writer(f).writerow([datetime.now().isoformat(), ssid, signal, local_p, web_p, diff])
+        except Exception:
+            pass  # Don't break the UI if logging fails
+        
         return jsonify({
             "raw": wifi_data,
             "localPing": local_p,
@@ -258,5 +294,8 @@ def get_stats():
 
 if __name__ == '__main__':
     print("--- FULL DIAGNOSTIC SERVER STARTED ---")
-    print("Open: http://127.0.0.1:5000")
+    print(f"Open: http://127.0.0.1:5000")
+    print(f"Logging to: {LOG_FILE}")
+    print("--- Data logs every 2s. Press Ctrl+C to stop. ---")
+    app.run(port=5000, debug=False, use_reloader=False)
 

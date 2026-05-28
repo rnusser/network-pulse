@@ -2,6 +2,9 @@ import subprocess
 import json
 import re
 import sys
+import csv
+import os
+from datetime import datetime
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -19,7 +22,7 @@ DASHBOARD_HTML = """
     <style>
         body { background-color: #05070a; color: white; font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 0; overflow-x: hidden; }
         .glass { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px); }
-        .bar { transition: height 0.4s ease-out; width: 100%; border-radius: 2px 2px 0 0; }
+        .bar { transition: height 0.5s ease-out; width: 100%; border-radius: 2px 2px 0 0; }
         .grid-container { display: grid; grid-template-columns: repeat(40, 1fr); gap: 2px; align-items: end; height: 100%; }
     </style>
 </head>
@@ -187,24 +190,30 @@ DASHBOARD_HTML = """
             }
         }
 
+        function setBarHeight(el, height) {
+            if (el.dataset.seeded) el.style.transition = 'none';
+            else el.dataset.seeded = 'true';
+            el.style.height = height;
+        }
+
         function renderCharts() {
             const len = history.local.length;
             for (let i = 0; i < len; i++) {
                 // Main Dual Chart
-                document.getElementById(`web-main-chart-${i}`).style.height = Math.min((history.web[i] / 250) * 100, 100) + '%';
-                document.getElementById(`loc-main-chart-${i}`).style.height = Math.min((history.local[i] / 250) * 100, 100) + '%';
+                setBarHeight(document.getElementById(`web-main-chart-${i}`), Math.min((history.web[i] / 250) * 100, 100) + '%');
+                setBarHeight(document.getElementById(`loc-main-chart-${i}`), Math.min((history.local[i] / 250) * 100, 100) + '%');
                 
                 // Signal Chart
-                document.getElementById(`val-signal-chart-${i}`).style.height = history.signal[i] + '%';
+                setBarHeight(document.getElementById(`val-signal-chart-${i}`), history.signal[i] + '%');
 
                 // Local Chart
-                document.getElementById(`val-local-chart-${i}`).style.height = Math.min((history.local[i] / 150) * 100, 100) + '%';
+                setBarHeight(document.getElementById(`val-local-chart-${i}`), Math.min((history.local[i] / 150) * 100, 100) + '%');
                 
                 // Web Chart
-                document.getElementById(`val-web-chart-${i}`).style.height = Math.min((history.web[i] / 250) * 100, 100) + '%';
+                setBarHeight(document.getElementById(`val-web-chart-${i}`), Math.min((history.web[i] / 250) * 100, 100) + '%');
                 
                 // Diff Chart
-                document.getElementById(`val-diff-chart-${i}`).style.height = Math.min((history.diff[i] / 150) * 100, 100) + '%';
+                setBarHeight(document.getElementById(`val-diff-chart-${i}`), Math.min((history.diff[i] / 150) * 100, 100) + '%');
             }
         }
 
@@ -217,6 +226,29 @@ DASHBOARD_HTML = """
 </body>
 </html>
 """
+
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, f"pulse_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+
+with open(LOG_FILE, 'w', newline='') as f:
+    csv.writer(f).writerow(["timestamp", "ssid", "signal_pct", "local_ping_ms", "web_ping_ms", "isp_overhead_ms"])
+
+def parse_wifi(raw):
+    ssid, signal = "Unknown", 0
+    for line in raw.split('\n'):
+        if line.strip().startswith('SSID'):
+            parts = line.split(':')
+            if len(parts) > 1:
+                ssid = parts[1].strip()
+        if 'Signal' in line:
+            parts = line.split(':')
+            if len(parts) > 1:
+                try:
+                    signal = int(parts[1].replace('%', '').strip())
+                except:
+                    pass
+    return ssid, signal
 
 def get_ping(host):
     try:
@@ -238,6 +270,16 @@ def get_stats():
         web_p = get_ping("8.8.8.8")
         # WiFi details via netsh
         wifi_data = subprocess.check_output("netsh wlan show interfaces", shell=True).decode('utf-8', errors='ignore')
+        
+        # Log to CSV
+        ssid, signal = parse_wifi(wifi_data)
+        diff = max(0, web_p - local_p)
+        try:
+            with open(LOG_FILE, 'a', newline='') as f:
+                csv.writer(f).writerow([datetime.now().isoformat(), ssid, signal, local_p, web_p, diff])
+        except Exception:
+            pass
+        
         return jsonify({
             "raw": wifi_data, 
             "localPing": local_p, 
@@ -253,5 +295,7 @@ def home():
 
 if __name__ == '__main__':
     print("--- NETWORK MONITOR v2.8 READY ---")
-    print("Link: http://127.0.0.1:5001")
+    print(f"Link: http://127.0.0.1:5001")
+    print(f"Logging to: {LOG_FILE}")
+    print("--- Data logs every 2s. Press Ctrl+C to stop. ---")
     app.run(port=5001, debug=False, use_reloader=False)
